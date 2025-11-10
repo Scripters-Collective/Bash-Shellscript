@@ -1,12 +1,6 @@
 #!/bin/bash
 
 # =========================================================================
-# LUKS Automatic Unlock Setup using Clevis and TPM2
-# Author: Gemini (Google)
-# Description: Installs Clevis/TPM2 dependencies and binds ALL LUKS volumes 
-#              defined in /etc/crypttab to the local Trusted Platform Module 
-#              (TPM) for secure, automatic, non-interactive decryption on RHEL 9.6.
-#
 # MIT License
 #
 # Copyright (c) 2025 Google
