@@ -26,96 +26,59 @@
 #
 # autoluks.sh
 #
-# This script automates adding a keyfile to all LUKS-encrypted devices
-# to allow for passwordless unlocking at boot.
+#!/bin/bash
+
+# This script finds all LUKS-encrypted volumes and enrolls them
+# with the system's vTPM for automatic decryption on boot.
 #
+# It MUST be run as root (or with sudo) to work.
 
-set -e
-
-# --- Configuration ---
-KEYFILE="/root/luks-keyfile"
-
-# --- Main Script ---
-
-# 1. Check for root privileges
+# --- Safety Check: Must be root ---
 if [ "$EUID" -ne 0 ]; then
-    echo "ERROR: This script must be run as root."
-    exit 1
+  echo "Please run this script as root or with sudo."
+  echo "Example: sudo ./enroll_luks_tpm.sh"
+  exit 1
 fi
 
-echo "INFO: Starting LUKS keyfile setup."
+echo "Scanning for all LUKS-encrypted devices..."
+echo ""
 
-# 2. Generate keyfile if it doesn't exist
-if [ -f "$KEYFILE" ]; then
-    echo "INFO: Keyfile already exists at $KEYFILE. Using existing key."
-else
-    echo "INFO: Generating new keyfile at $KEYFILE..."
-    dd if=/dev/urandom of="$KEYFILE" bs=4096 count=1
-    chmod 0400 "$KEYFILE"
-    echo "INFO: Keyfile generated."
+# Find all devices with FSTYPE="crypto_LUKS" and get their full /dev/path
+luks_devices=$(lsblk -o PATH,FSTYPE --noheadings | awk '$2 == "crypto_LUKS" {print $1}')
+
+if [ -z "$luks_devices" ]; then
+    echo "No LUKS devices found."
+    exit 0
 fi
 
-# 3. Get current LUKS passphrase
-echo -n "Enter the current LUKS passphrase to authorize adding the new key >> "
-stty -echo
-read -r CURRPP
-stty echo
-echo
+# Loop through each found device
+for device in $luks_devices; do
+    echo "--- Processing $device ---"
 
-if [ -z "$CURRPP" ]; then
-    echo "ERROR: Empty passphrase is not permitted."
-    exit 1
-fi
-
-# 4. Process all LUKS devices
-for blkdev in $(blkid -t TYPE=crypto_LUKS -o device); do
-    echo "--- Processing device: $blkdev ---"
-
-    # Add the keyfile to the LUKS device
-    echo "INFO: Adding keyfile to $blkdev..."
-    if echo -n "$CURRPP" | cryptsetup luksAddKey "$blkdev" "$KEYFILE" --key-file -; then
-        echo "INFO: Successfully added keyfile to $blkdev."
+    # Check if a TPM2 key is already enrolled in any slot
+    if systemd-cryptenroll "$device" | grep -q 'tpm2'; then
+        echo "TPM2 is already enrolled on $device. Skipping."
     else
-        echo "ERROR: Failed to add keyfile to $blkdev. The passphrase may be incorrect."
-        # Clean up the keyfile if we created it in this run.
-        # Note: This doesn't remove it from devices it was successfully added to.
-        # rm -f "$KEYFILE" 
-        exit 1
+        echo "No TPM2 enrollment found. Attempting to enroll $device..."
+        echo ""
+        echo "******************************************************************"
+        echo "Please enter the CURRENT LUKS password for $device to authorize."
+        echo "This password will NOT be saved. It is only used to add the TPM key."
+        echo "******************************************************************"
+
+        # Run the enrollment command.
+        # This will interactively ask for the password for "$device".
+        if systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 "$device"; then
+            echo ""
+            echo "Successfully enrolled $device with TPM2."
+        else
+            echo ""
+            echo "Failed to enroll $device. The password may have been incorrect."
+            echo "You can re-run this script to try again."
+        fi
     fi
-
-    # 5. Update /etc/crypttab
-    echo "INFO: Updating /etc/crypttab for $blkdev..."
-    DEV_UUID=$(blkid -s UUID -o value "$blkdev")
-    LUKS_NAME="luks-${DEV_UUID}"
-    TEMP_CRYPTTAB=$(mktemp)
-
-    # Create a backup
-    cp /etc/crypttab /etc/crypttab.bak.$$
-
-    # Remove any old entry for this device to avoid duplicates
-    grep -v "$DEV_UUID" /etc/crypttab > "$TEMP_CRYPTTAB" || true
-    
-    # Add the new, correct entry
-    echo "$LUKS_NAME UUID=$DEV_UUID $KEYFILE luks" >> "$TEMP_CRYPTTAB"
-    
-    # Overwrite the original with the updated version
-    cp "$TEMP_CRYPTTAB" /etc/crypttab
-    rm -f "$TEMP_CRYPTTAB"
-    echo "INFO: /etc/crypttab updated for $blkdev."
+    echo "-----------------------------------"
+    echo ""
 done
 
-# 6. Rebuild initramfs
-echo "--- System Configuration ---"
-echo "INFO: All devices have been configured."
-echo -n "Do you wish to rebuild the initramfs to apply these changes? [y/N] "
-read -r ans
-if [[ "$ans" =~ ^[Yy]$ ]]; then
-    echo "INFO: Rebuilding initramfs. This may take a few minutes..."
-    dracut -f --regenerate-all
-    echo "INFO: Initramfs rebuild complete."
-else
-    echo "INFO: Initrd not rebuilt. The system will not use the keyfile on boot."
-fi
-
-echo "INFO: Script finished successfully."
-exit 0
+echo "All devices processed. Reboot to test automatic decryption."
