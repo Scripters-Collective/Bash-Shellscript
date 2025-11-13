@@ -36,7 +36,7 @@
 # --- Safety Check: Must be root ---
 if [ "$EUID" -ne 0 ]; then
   echo "Please run this script as root or with sudo."
-  echo "Example: sudo ./enroll_all_luks_final.sh"
+  echo "Example: sudo ./autoluks.sh"
   exit 1
 fi
 
